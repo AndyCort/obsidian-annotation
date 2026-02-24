@@ -7,7 +7,7 @@ import {
     WidgetType,
 } from '@codemirror/view';
 import { RangeSetBuilder } from '@codemirror/state';
-import { editorLivePreviewField, renderMath, finishRenderMath } from 'obsidian';
+import { editorLivePreviewField } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
 import { Annotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
@@ -28,9 +28,8 @@ class HiddenMarkerWidget extends WidgetType {
  * A widget that replaces the entire mask syntax (~=content=~) with a
  * blurred container that renders the content including LaTeX math.
  *
- * Uses Obsidian's renderMath/finishRenderMath API.
- * Key fix: finishRenderMath() is deferred via requestAnimationFrame
- * so it runs AFTER CM6 has mounted the widget in the document DOM.
+ * Instead of manually parsing math with regex (which can miss edge cases),
+ * we insert the raw text and let MathJax typeset it after mount.
  */
 class MaskWidget extends WidgetType {
     constructor(private content: string) {
@@ -40,66 +39,22 @@ class MaskWidget extends WidgetType {
     toDOM(): HTMLElement {
         const wrapper = document.createElement('span');
         wrapper.className = 'annotation-mask';
+        wrapper.textContent = this.content;
 
-        let hasMath = false;
-        const text = this.content;
-
-        // Regex: find $$...$$ (display math) or $...$ (inline math)
-        const mathRegex = /\$\$([\s\S]*?)\$\$|\$((?:[^$\\]|\\.)+?)\$/g;
-        let lastIndex = 0;
-        let match: RegExpExecArray | null;
-
-        while ((match = mathRegex.exec(text)) !== null) {
-            // Add plain text before this math expression
-            if (match.index > lastIndex) {
-                wrapper.appendChild(
-                    document.createTextNode(text.slice(lastIndex, match.index))
-                );
-            }
-
-            const displayMathContent = match[1];  // from $$...$$
-            const inlineMathContent = match[2];    // from $...$
-            const mathSource = displayMathContent !== undefined
-                ? displayMathContent
-                : (inlineMathContent || '');
-            const isDisplay = displayMathContent !== undefined;
-
+        // After the widget is mounted in the DOM, ask MathJax to
+        // typeset any math expressions ($...$, $$...$$) within it.
+        requestAnimationFrame(() => {
             try {
-                const mathEl = renderMath(mathSource, isDisplay);
-                wrapper.appendChild(mathEl);
-                hasMath = true;
-            } catch {
-                // Fallback: show raw text
-                wrapper.appendChild(document.createTextNode(match[0]));
-            }
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        // Add remaining plain text after the last math expression
-        if (lastIndex < text.length) {
-            wrapper.appendChild(
-                document.createTextNode(text.slice(lastIndex))
-            );
-        }
-
-        // If no math was found and no text was added, show the raw content
-        if (lastIndex === 0 && !hasMath) {
-            wrapper.textContent = text;
-        }
-
-        // CRITICAL: finishRenderMath() must be called AFTER the widget is
-        // mounted in the document DOM. toDOM() is called before mounting,
-        // so we defer the call.
-        if (hasMath) {
-            requestAnimationFrame(() => {
-                try {
-                    finishRenderMath();
-                } catch {
-                    // ignore
+                const MJ = (window as any).MathJax;
+                if (MJ && MJ.typesetPromise) {
+                    MJ.typesetPromise([wrapper]);
+                } else if (MJ && MJ.typeset) {
+                    MJ.typeset([wrapper]);
                 }
-            });
-        }
+            } catch {
+                // MathJax not available or typesetting failed — show raw text
+            }
+        });
 
         return wrapper;
     }
