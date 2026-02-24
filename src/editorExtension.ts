@@ -117,21 +117,33 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
     return builder.finish();
 }
 
+/** CSS selectors for widget-like elements in Obsidian's CM6 editor */
+const WIDGET_SELECTORS = [
+    '[contenteditable="false"]',
+    '.cm-widget',
+    '.cm-embed-block',
+    'mjx-container',
+    '.math',
+    '.MathJax',
+    '.internal-embed',
+    '.cm-inline-code',
+].join(', ');
+
 /**
  * Apply blur effect directly to DOM elements within mask ranges.
  *
  * CM6 mark decorations do NOT wrap around widget decorations (e.g. rendered
  * LaTeX). We query all widget-like elements in the editor's content DOM
- * and check if their document position falls within a mask range using
- * view.posAtDOM(). If so, we add the blur class directly.
+ * and check if their document position falls within a mask range.
  */
 function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void {
     const masks = annotations.filter(a => a.type === 'mask') as MaskAnnotation[];
 
     // Clean up previously applied DOM-level mask classes
-    view.dom.querySelectorAll('.annotation-mask-widget').forEach(el => {
+    const existing = Array.from(view.dom.querySelectorAll('.annotation-mask-widget'));
+    for (const el of existing) {
         el.classList.remove('annotation-mask-widget');
-    });
+    }
 
     if (masks.length === 0) return;
 
@@ -151,28 +163,12 @@ function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void 
     });
     if (activeMasks.length === 0) return;
 
-    // Query ALL potential widget elements in the editor content DOM.
-    // In Obsidian's CM6, rendered widgets (math, embeds, etc.) are typically:
-    // - Elements with contenteditable="false"
-    // - Elements with class cm-widget
-    // - <mjx-container> tags
-    // - Elements with .math, .MathJax, etc.
-    const selectors = [
-        '[contenteditable="false"]',
-        '.cm-widget',
-        '.cm-embed-block',
-        'mjx-container',
-        '.math',
-        '.MathJax',
-        '.internal-embed',
-    ].join(', ');
-
-    const widgetElements = Array.from(view.contentDOM.querySelectorAll(selectors));
+    const widgetElements = Array.from(view.contentDOM.querySelectorAll(WIDGET_SELECTORS));
 
     for (const widgetEl of widgetElements) {
         const htmlEl = widgetEl as HTMLElement;
 
-        // Skip our own annotation elements
+        // Skip our own annotation elements and already-processed ones
         if (htmlEl.classList.contains('annotation-mask') ||
             htmlEl.classList.contains('annotation-comment') ||
             htmlEl.classList.contains('annotation-mask-widget')) {
@@ -182,18 +178,34 @@ function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void 
         try {
             const pos = view.posAtDOM(widgetEl as Node);
 
-            // Check if this position falls within any active mask range
+            // Use a broad range check: include the full syntax range (syntaxFrom..syntaxTo)
+            // because posAtDOM might return positions at the boundary markers
             for (const mask of activeMasks) {
-                if (pos >= mask.from && pos <= mask.to) {
+                if (pos >= mask.syntaxFrom && pos <= mask.syntaxTo) {
                     htmlEl.classList.add('annotation-mask-widget');
                     break;
                 }
             }
         } catch {
-            // posAtDOM can throw if the element is not in the editor
-            // or has been removed — just skip it
+            // posAtDOM can throw — skip
         }
     }
+}
+
+/**
+ * Schedule mask effects with multiple retries to handle async widget rendering.
+ * Obsidian's math renderer may fire after our initial requestAnimationFrame,
+ * so we retry a few times to catch late-rendered widgets.
+ */
+function scheduleMaskEffects(view: EditorView, annotations: Annotation[]): void {
+    // Immediate attempt
+    requestAnimationFrame(() => {
+        applyDomMaskEffects(view, annotations);
+        // Second attempt after a short delay (catches late math rendering)
+        setTimeout(() => applyDomMaskEffects(view, annotations), 100);
+        // Third attempt for very slow renders
+        setTimeout(() => applyDomMaskEffects(view, annotations), 500);
+    });
 }
 
 /**
@@ -204,11 +216,23 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
         class {
             decorations: DecorationSet;
             private annotations: Annotation[] = [];
+            private observer: MutationObserver | null = null;
+            private view: EditorView;
 
             constructor(view: EditorView) {
+                this.view = view;
                 this.annotations = collectAnnotations(view);
                 this.decorations = buildDecorations(view, settings, this.annotations);
-                requestAnimationFrame(() => applyDomMaskEffects(view, this.annotations));
+                scheduleMaskEffects(view, this.annotations);
+
+                // MutationObserver to catch async widget insertions (e.g. LaTeX rendering)
+                this.observer = new MutationObserver(() => {
+                    applyDomMaskEffects(this.view, this.annotations);
+                });
+                this.observer.observe(view.contentDOM, {
+                    childList: true,
+                    subtree: true,
+                });
             }
 
             update(update: ViewUpdate) {
@@ -219,8 +243,14 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                 ) {
                     this.annotations = collectAnnotations(update.view);
                     this.decorations = buildDecorations(update.view, settings, this.annotations);
-                    // Schedule DOM effects after CM6 has finished rendering
-                    requestAnimationFrame(() => applyDomMaskEffects(update.view, this.annotations));
+                    scheduleMaskEffects(update.view, this.annotations);
+                }
+            }
+
+            destroy() {
+                if (this.observer) {
+                    this.observer.disconnect();
+                    this.observer = null;
                 }
             }
         },
