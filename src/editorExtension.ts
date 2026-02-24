@@ -9,7 +9,7 @@ import {
 import { RangeSetBuilder } from '@codemirror/state';
 import { editorLivePreviewField } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
-import { Annotation, AnnotationPluginSettings } from './types';
+import { Annotation, MaskAnnotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
 
 /**
@@ -25,13 +25,9 @@ class HiddenMarkerWidget extends WidgetType {
 }
 
 /**
- * Build decorations for all visible annotations in the editor.
+ * Collect all annotations from visible ranges.
  */
-function buildDecorations(view: EditorView, settings: AnnotationPluginSettings): DecorationSet {
-    const builder = new RangeSetBuilder<Decoration>();
-    const isLivePreview = view.state.field(editorLivePreviewField);
-
-    // Collect all annotations with their positions
+function collectAnnotations(view: EditorView): Annotation[] {
     const annotations: Annotation[] = [];
 
     for (const { from, to } of view.visibleRanges) {
@@ -46,26 +42,31 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings):
         }
     }
 
-    // Sort annotations by syntaxFrom to ensure correct ordering for RangeSetBuilder
     annotations.sort((a, b) => a.syntaxFrom - b.syntaxFrom);
+    return annotations;
+}
+
+/**
+ * Build decorations for all visible annotations in the editor.
+ */
+function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, annotations: Annotation[]): DecorationSet {
+    const builder = new RangeSetBuilder<Decoration>();
+    const isLivePreview = view.state.field(editorLivePreviewField);
 
     for (const ann of annotations) {
         if (ann.type === 'comment') {
             if (isLivePreview) {
-                // Check if the cursor is inside the annotation syntax range
                 const cursorInside = view.state.selection.ranges.some(
                     range => range.from >= ann.syntaxFrom && range.to <= ann.syntaxTo
                 );
 
                 if (!cursorInside) {
-                    // Hide the opening "==comment::" prefix
                     builder.add(
                         ann.syntaxFrom,
                         ann.from,
                         Decoration.replace({ widget: new HiddenMarkerWidget() })
                     );
 
-                    // Highlight the visible text
                     builder.add(
                         ann.from,
                         ann.to,
@@ -75,14 +76,12 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings):
                         })
                     );
 
-                    // Hide the closing "=="
                     builder.add(
                         ann.to,
                         ann.syntaxTo,
                         Decoration.replace({ widget: new HiddenMarkerWidget() })
                     );
                 } else {
-                    // Cursor inside — show the raw syntax but still highlight the text portion
                     builder.add(
                         ann.from,
                         ann.to,
@@ -93,7 +92,6 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings):
                     );
                 }
             } else {
-                // Source mode: just highlight
                 builder.add(
                     ann.from,
                     ann.to,
@@ -110,21 +108,18 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings):
                 );
 
                 if (!cursorInside) {
-                    // Hide opening "~="
                     builder.add(
                         ann.syntaxFrom,
                         ann.from,
                         Decoration.replace({ widget: new HiddenMarkerWidget() })
                     );
 
-                    // Apply mask
                     builder.add(
                         ann.from,
                         ann.to,
                         Decoration.mark({ class: 'annotation-mask' })
                     );
 
-                    // Hide closing "=~"
                     builder.add(
                         ann.to,
                         ann.syntaxTo,
@@ -151,15 +146,125 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings):
 }
 
 /**
+ * Apply blur effect directly to DOM elements within mask ranges.
+ * This is necessary because CM6 mark decorations do NOT wrap around
+ * widget decorations (e.g. rendered LaTeX). We must find those widget
+ * DOM elements and apply the blur class to them directly.
+ */
+function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void {
+    const masks = annotations.filter(a => a.type === 'mask') as MaskAnnotation[];
+    const isLivePreview = view.state.field(editorLivePreviewField);
+
+    // Clean up previously applied DOM-level mask classes
+    view.dom.querySelectorAll('.annotation-mask-widget').forEach(el => {
+        el.classList.remove('annotation-mask-widget');
+    });
+
+    if (!isLivePreview) return;
+
+    for (const mask of masks) {
+        const cursorInside = view.state.selection.ranges.some(
+            range => range.from >= mask.syntaxFrom && range.to <= mask.syntaxTo
+        );
+        if (cursorInside) continue;
+
+        try {
+            // Walk through the DOM nodes within the mask range
+            // and apply the blur class to any widget elements (e.g. rendered LaTeX)
+            const startInfo = view.domAtPos(mask.from);
+            const endInfo = view.domAtPos(mask.to);
+
+            const startNode = startInfo.node;
+            const endNode = endInfo.node;
+
+            // Find the common line element (cm-line)
+            const lineEl = view.dom.querySelector('.cm-line')
+                ? getLineElement(startNode)
+                : null;
+
+            if (!lineEl) continue;
+
+            // Walk all child elements of the line and check if they fall within the mask range
+            const children = Array.from(lineEl.childNodes);
+            let inRange = false;
+
+            for (const child of children) {
+                // Check if this node is or contains the start node
+                if (child === startNode || child.contains(startNode)) {
+                    inRange = true;
+                }
+
+                // If we're in range, check for widget elements that need blur
+                if (inRange && child instanceof HTMLElement) {
+                    // Obsidian renders math, embeds, etc. as widget elements
+                    // These typically have classes like cm-embed-block, math, mjx-container, etc.
+                    if (isWidgetElement(child)) {
+                        child.classList.add('annotation-mask-widget');
+                    }
+                }
+
+                // Check if this node is or contains the end node
+                if (child === endNode || child.contains(endNode)) {
+                    inRange = false;
+                    break;
+                }
+            }
+        } catch (e) {
+            // Position might not be visible or DOM not ready
+        }
+    }
+}
+
+/**
+ * Walk up the DOM tree to find the cm-line element.
+ */
+function getLineElement(node: Node): HTMLElement | null {
+    let current: Node | null = node;
+    while (current) {
+        if (current instanceof HTMLElement && current.classList.contains('cm-line')) {
+            return current;
+        }
+        current = current.parentNode;
+    }
+    return null;
+}
+
+/**
+ * Check if an element is a CM6 widget (e.g. rendered LaTeX, embed, etc.)
+ * that is NOT already our own annotation element.
+ */
+function isWidgetElement(el: HTMLElement): boolean {
+    // Skip our own annotation spans
+    if (el.classList.contains('annotation-mask') || el.classList.contains('annotation-comment')) {
+        return false;
+    }
+    // Common widget/embed selectors in Obsidian's CM6 editor
+    return (
+        el.classList.contains('cm-embed-block') ||
+        el.classList.contains('cm-widget') ||
+        el.classList.contains('math') ||
+        el.classList.contains('internal-embed') ||
+        el.querySelector('mjx-container') !== null ||
+        el.querySelector('.MathJax') !== null ||
+        el.querySelector('.math') !== null ||
+        el.tagName === 'MJX-CONTAINER'
+    );
+}
+
+/**
  * Create the CodeMirror 6 editor extension for annotation decorations.
  */
 export function createAnnotationEditorExtension(settings: AnnotationPluginSettings) {
     const annotationViewPlugin = ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
+            private annotations: Annotation[] = [];
 
             constructor(view: EditorView) {
-                this.decorations = buildDecorations(view, settings);
+                this.annotations = collectAnnotations(view);
+                this.decorations = buildDecorations(view, settings, this.annotations);
+                // Schedule DOM mask effects after initial render
+                requestAnimationFrame(() => applyDomMaskEffects(view, this.annotations));
             }
 
             update(update: ViewUpdate) {
@@ -168,7 +273,10 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                     update.viewportChanged ||
                     update.selectionSet
                 ) {
-                    this.decorations = buildDecorations(update.view, settings);
+                    this.annotations = collectAnnotations(update.view);
+                    this.decorations = buildDecorations(update.view, settings, this.annotations);
+                    // Schedule DOM mask effects after CM6 has finished rendering
+                    requestAnimationFrame(() => applyDomMaskEffects(update.view, this.annotations));
                 }
             }
         },
@@ -188,11 +296,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                 if (comment) {
                     const rect = target.getBoundingClientRect();
 
-                    // Find the precise annotation range to allow editing
                     const pos = view.posAtDOM(target);
-                    const doc = view.state.doc.toString();
-                    // We need the original syntax bounds. Instead of parsing the whole doc,
-                    // we just rely on parsing the line containing the pos.
                     const line = view.state.doc.lineAt(pos);
                     const annotations = parseAnnotationsFromLine(line.text, line.from);
                     const ann = annotations.find(a => a.type === 'comment' && a.from <= pos && a.to >= pos) as any;
@@ -203,10 +307,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                             rect,
                             container: document.body,
                             onSave: (newComment: string) => {
-                                // Dispatch a transaction to update the comment text in the document
-                                // Original syntax: ==oldComment::text==
-                                // We replace the `==oldComment::` part with `==newComment::`
-                                const prefixEnd = ann.from; // This is where the actual text starts
+                                const prefixEnd = ann.from;
                                 const prefixStart = ann.syntaxFrom;
 
                                 view.dispatch({
@@ -219,7 +320,6 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                             }
                         });
                     } else {
-                        // Fallback if we can't find the exact annotation (e.g. in reading view if we ever reuse this logic)
                         showTooltip({ comment, rect, container: document.body });
                     }
                 }
@@ -229,7 +329,6 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
             const target = event.target as HTMLElement;
             const related = event.relatedTarget as HTMLElement | null;
 
-            // If we're leaving a comment annotation and not entering the tooltip
             if (
                 target.classList.contains('annotation-comment') &&
                 (!related || !related.classList.contains('annotation-tooltip'))

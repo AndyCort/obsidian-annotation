@@ -114,6 +114,20 @@
 	background-color: rgba(100, 200, 255, 0.08);
 }
 
+/* DOM-level mask for widget elements (rendered LaTeX, embeds, etc.)
+   that fall within mask ranges but aren't wrapped by CM6 mark decorations */
+.annotation-mask-widget {
+	filter: blur(var(--annotation-mask-blur, 5px)) !important;
+	transition: filter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+	cursor: pointer;
+	user-select: none;
+}
+
+.annotation-mask-widget:hover {
+	filter: blur(0px) !important;
+	user-select: text;
+}
+
 /* ── Settings Page ── */
 .annotation-syntax-help {
 	padding: 12px 16px;
