@@ -187,7 +187,41 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                 const comment = target.getAttribute('data-annotation-comment');
                 if (comment) {
                     const rect = target.getBoundingClientRect();
-                    showTooltip(comment, rect, document.body);
+
+                    // Find the precise annotation range to allow editing
+                    const pos = view.posAtDOM(target);
+                    const doc = view.state.doc.toString();
+                    // We need the original syntax bounds. Instead of parsing the whole doc,
+                    // we just rely on parsing the line containing the pos.
+                    const line = view.state.doc.lineAt(pos);
+                    const annotations = parseAnnotationsFromLine(line.text, line.from);
+                    const ann = annotations.find(a => a.type === 'comment' && a.from <= pos && a.to >= pos) as any;
+
+                    if (ann) {
+                        showTooltip({
+                            comment,
+                            rect,
+                            container: document.body,
+                            onSave: (newComment: string) => {
+                                // Dispatch a transaction to update the comment text in the document
+                                // Original syntax: ==oldComment::text==
+                                // We replace the `==oldComment::` part with `==newComment::`
+                                const prefixEnd = ann.from; // This is where the actual text starts
+                                const prefixStart = ann.syntaxFrom;
+
+                                view.dispatch({
+                                    changes: {
+                                        from: prefixStart,
+                                        to: prefixEnd,
+                                        insert: `==${newComment}::`
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+                        // Fallback if we can't find the exact annotation (e.g. in reading view if we ever reuse this logic)
+                        showTooltip({ comment, rect, container: document.body });
+                    }
                 }
             }
         },

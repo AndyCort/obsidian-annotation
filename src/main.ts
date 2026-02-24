@@ -25,6 +25,46 @@ export default class AnnotationPlugin extends Plugin {
         // Inject dynamic CSS custom properties
         this.updateStyles();
 
+        // Add commands
+        this.addCommand({
+            id: 'add-mask-to-selection',
+            name: 'Add Mask to selection',
+            editorCallback: (editor) => {
+                const selection = editor.getSelection();
+                editor.replaceSelection(`~=${selection}=~`);
+            }
+        });
+
+        this.addCommand({
+            id: 'add-comment-to-selection',
+            name: 'Add Comment to selection',
+            editorCallback: (editor) => {
+                const selection = editor.getSelection();
+                // Insert the prefix and suffix around the selection
+                editor.replaceSelection(`==批注::${selection}==`);
+
+                // Optional: Move cursor back to the "批注" text so they can edit it immediately
+                // Cursor should be at the start of "批注"
+                const cursor = editor.getCursor();
+                // cursor is now at the END of the inserted text `==批注::selection==`
+                // length of `==` is 2
+                // length of selection is selection.length
+                // length of `::` is 2
+                // length of `批注` is 2
+                // Total backwards move needed: 2 (==) + selection.length + 2 (::) + 2 (批注)
+                editor.setCursor({
+                    line: cursor.line,
+                    ch: cursor.ch - 2 - selection.length - 2 - 2
+                });
+
+                // Select the "批注" placeholder
+                editor.setSelection(
+                    { line: cursor.line, ch: cursor.ch - 2 - selection.length - 4 },
+                    { line: cursor.line, ch: cursor.ch - 2 - selection.length - 2 }
+                );
+            }
+        });
+
         console.log('Annotation plugin loaded');
     }
 

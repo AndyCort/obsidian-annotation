@@ -88,7 +88,11 @@ export function annotationPostProcessor(
                 // Hover events for tooltip
                 span.addEventListener('mouseenter', () => {
                     const rect = span.getBoundingClientRect();
-                    showTooltip(match.comment || '', rect, document.body);
+                    showTooltip({
+                        comment: match.comment || '',
+                        rect,
+                        container: document.body
+                    });
                 });
                 span.addEventListener('mouseleave', (evt) => {
                     const related = evt.relatedTarget as HTMLElement | null;
