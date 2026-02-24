@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-annotation",
 	"name": "Annotation",
-	"version": "1.0.9",
+	"version": "1.0.8",
 	"minAppVersion": "1.0.0",
 	"description": "Add inline comment annotations and text masks to your notes using markdown-like syntax.",
 	"author": "Andy",

@@ -91,12 +91,7 @@
 	transform: rotate(45deg);
 }
 
-/* ── Mask ──
-   Used by both:
-   1. MaskWidget (cursor outside) — wraps everything including rendered math
-   2. Decoration.mark (cursor inside) — wraps raw text only
-   filter: blur() on the parent applies to ALL children inside the span. */
-
+/* ── Mask ── */
 .annotation-mask {
 	position: relative;
 	display: inline;

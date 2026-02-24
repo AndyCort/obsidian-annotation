@@ -6,8 +6,8 @@ import {
     EditorView,
     WidgetType,
 } from '@codemirror/view';
-import { RangeSetBuilder } from '@codemirror/state';
-import { editorLivePreviewField } from 'obsidian';
+import { RangeSetBuilder, Prec } from '@codemirror/state';
+import { editorLivePreviewField, renderMath, finishRenderMath } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
 import { Annotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
@@ -25,11 +25,12 @@ class HiddenMarkerWidget extends WidgetType {
 }
 
 /**
- * A widget that replaces the entire mask syntax (~=content=~) with a
- * blurred container that renders the content including LaTeX math.
+ * A widget that replaces the entire ~=content=~ range.
+ * It renders the content (including LaTeX) inside a blurred container.
  *
- * Instead of manually parsing math with regex (which can miss edge cases),
- * we insert the raw text and let MathJax typeset it after mount.
+ * We use Decoration.replace() + Prec.highest() to ensure our decoration
+ * takes priority over Obsidian's built-in math rendering, which also uses
+ * replace decorations for $...$ ranges.
  */
 class MaskWidget extends WidgetType {
     constructor(private content: string) {
@@ -39,24 +40,63 @@ class MaskWidget extends WidgetType {
     toDOM(): HTMLElement {
         const wrapper = document.createElement('span');
         wrapper.className = 'annotation-mask';
-        wrapper.textContent = this.content;
 
-        // After the widget is mounted in the DOM, ask MathJax to
-        // typeset any math expressions ($...$, $$...$$) within it.
-        requestAnimationFrame(() => {
+        this.renderContent(wrapper);
+
+        // finishRenderMath must be called AFTER element is in the DOM.
+        // Schedule it for the next microtask/frame when CM6 has mounted this widget.
+        setTimeout(() => {
             try {
-                const MJ = (window as any).MathJax;
-                if (MJ && MJ.typesetPromise) {
-                    MJ.typesetPromise([wrapper]);
-                } else if (MJ && MJ.typeset) {
-                    MJ.typeset([wrapper]);
-                }
+                finishRenderMath();
             } catch {
-                // MathJax not available or typesetting failed — show raw text
+                // ignore
             }
-        });
+        }, 50);
 
         return wrapper;
+    }
+
+    /**
+     * Render text content, replacing $...$ and $$...$$ with rendered math.
+     */
+    private renderContent(container: HTMLElement): void {
+        const text = this.content;
+
+        // Match $$...$$ (display math) first, then $...$ (inline math)
+        const mathRegex = /\$\$([\s\S]*?)\$\$|\$((?:[^$\\]|\\.)+?)\$/g;
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+
+        while ((match = mathRegex.exec(text)) !== null) {
+            // Add plain text before the math expression
+            if (match.index > lastIndex) {
+                container.appendChild(
+                    document.createTextNode(text.slice(lastIndex, match.index))
+                );
+            }
+
+            const displayMath = match[1]; // from $$...$$
+            const inlineMath = match[2];  // from $...$
+            const mathSource = displayMath !== undefined ? displayMath : (inlineMath || '');
+            const isDisplay = displayMath !== undefined;
+
+            try {
+                const mathEl = renderMath(mathSource, isDisplay);
+                container.appendChild(mathEl);
+            } catch {
+                // Fallback: show raw LaTeX text
+                container.appendChild(document.createTextNode(match[0]));
+            }
+
+            lastIndex = match.index + match[0].length;
+        }
+
+        // Add remaining plain text
+        if (lastIndex < text.length) {
+            container.appendChild(
+                document.createTextNode(text.slice(lastIndex))
+            );
+        }
     }
 
     eq(other: MaskWidget): boolean {
@@ -141,13 +181,13 @@ function buildDecorations(view: EditorView, annotations: Annotation[]): Decorati
                 );
 
                 if (!cursorInside) {
-                    // Replace the ENTIRE ~=...=~ range with MaskWidget.
-                    // MaskWidget renders the content (incl. math) in a blur wrapper.
+                    // Replace the ENTIRE ~=content=~ with our MaskWidget that renders
+                    // the content (including math) inside a blur container.
                     const maskContent = view.state.sliceDoc(ann.from, ann.to);
                     builder.add(ann.syntaxFrom, ann.syntaxTo,
                         Decoration.replace({ widget: new MaskWidget(maskContent) }));
                 } else {
-                    // Cursor inside: show raw syntax, just highlight content
+                    // Cursor inside: show raw text with blur mark
                     builder.add(ann.from, ann.to,
                         Decoration.mark({ class: 'annotation-mask' }));
                 }
@@ -168,11 +208,9 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
     const annotationViewPlugin = ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
-            private annotations: Annotation[] = [];
 
             constructor(view: EditorView) {
-                this.annotations = collectAnnotations(view);
-                this.decorations = buildDecorations(view, this.annotations);
+                this.decorations = buildDecorations(view, collectAnnotations(view));
             }
 
             update(update: ViewUpdate) {
@@ -181,8 +219,10 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                     update.viewportChanged ||
                     update.selectionSet
                 ) {
-                    this.annotations = collectAnnotations(update.view);
-                    this.decorations = buildDecorations(update.view, this.annotations);
+                    this.decorations = buildDecorations(
+                        update.view,
+                        collectAnnotations(update.view)
+                    );
                 }
             }
         },
@@ -196,7 +236,6 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
         mouseover(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
 
-            // Comment tooltip
             if (target.classList.contains('annotation-comment')) {
                 const comment = target.getAttribute('data-annotation-comment');
                 if (comment) {
@@ -214,12 +253,10 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                             rect,
                             container: document.body,
                             onSave: (newComment: string) => {
-                                const prefixEnd = ann.from;
-                                const prefixStart = ann.syntaxFrom;
                                 view.dispatch({
                                     changes: {
-                                        from: prefixStart,
-                                        to: prefixEnd,
+                                        from: ann.syntaxFrom,
+                                        to: ann.from,
                                         insert: `==${newComment}::`
                                     }
                                 });
@@ -244,5 +281,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
         },
     });
 
-    return [annotationViewPlugin, hoverHandler];
+    // Use Prec.highest() to ensure our decorations take priority over
+    // Obsidian's built-in math rendering (which also uses replace decorations).
+    return [Prec.highest(annotationViewPlugin), hoverHandler];
 }
