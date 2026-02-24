@@ -1,0 +1,97 @@
+/* ============================================
+   Obsidian Annotation Plugin — Stylesheet
+   ============================================ */
+
+/* ── Comment Highlight ── */
+.annotation-comment {
+	background-color: var(--annotation-highlight-color, #fff3a380);
+	border-radius: 3px;
+	padding: 1px 2px;
+	cursor: help;
+	transition: background-color 0.2s ease;
+	border-bottom: 2px dashed rgba(255, 200, 0, 0.5);
+}
+
+.annotation-comment:hover {
+	background-color: rgba(255, 243, 163, 0.6);
+}
+
+/* ── Tooltip ── */
+.annotation-tooltip {
+	position: fixed;
+	z-index: 9999;
+	max-width: 320px;
+	padding: 8px 14px;
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--annotation-tooltip-text, #cdd6f4);
+	background: var(--annotation-tooltip-bg, #1e1e2e);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 8px;
+	box-shadow:
+		0 4px 16px rgba(0, 0, 0, 0.25),
+		0 0 0 1px rgba(255, 255, 255, 0.05);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	pointer-events: none;
+
+	/* Fade-in animation */
+	animation: annotation-tooltip-fadein 0.18s ease-out;
+}
+
+@keyframes annotation-tooltip-fadein {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* Small arrow/caret at top */
+.annotation-tooltip::before {
+	content: '';
+	position: absolute;
+	top: -5px;
+	left: 16px;
+	width: 10px;
+	height: 10px;
+	background: var(--annotation-tooltip-bg, #1e1e2e);
+	border-top: 1px solid rgba(255, 255, 255, 0.1);
+	border-left: 1px solid rgba(255, 255, 255, 0.1);
+	transform: rotate(45deg);
+}
+
+/* ── Mask ── */
+.annotation-mask {
+	position: relative;
+	display: inline;
+	filter: blur(var(--annotation-mask-blur, 5px));
+	transition: filter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+	cursor: pointer;
+	user-select: none;
+	border-radius: 3px;
+	padding: 1px 2px;
+	background-color: rgba(128, 128, 128, 0.1);
+}
+
+.annotation-mask:hover {
+	filter: blur(0px);
+	user-select: text;
+	background-color: rgba(100, 200, 255, 0.08);
+}
+
+/* ── Settings Page ── */
+.annotation-syntax-help {
+	padding: 12px 16px;
+	background: var(--background-secondary);
+	border-radius: 8px;
+	font-family: var(--font-monospace);
+	font-size: 13px;
+}
+
+.annotation-syntax-help p {
+	margin: 4px 0;
+}

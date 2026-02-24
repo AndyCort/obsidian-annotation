@@ -1,0 +1,22 @@
+{
+    "name": "obsidian-annotation",
+    "version": "1.0.0",
+    "description": "Obsidian plugin for inline comment annotations and text masks.",
+    "main": "main.js",
+    "type": "module",
+    "scripts": {
+        "dev": "node esbuild.config.mjs",
+        "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    },
+    "keywords": [],
+    "license": "MIT",
+    "devDependencies": {
+        "@types/node": "^16.11.6",
+        "esbuild": "0.25.0",
+        "tslib": "2.4.0",
+        "typescript": "5.4.5"
+    },
+    "dependencies": {
+        "obsidian": "latest"
+    }
+}
