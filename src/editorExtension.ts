@@ -255,9 +255,9 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                             onSave: (newComment: string) => {
                                 view.dispatch({
                                     changes: {
-                                        from: ann.syntaxFrom,
-                                        to: ann.from,
-                                        insert: `==${newComment}::`
+                                        from: ann.to,
+                                        to: ann.syntaxTo,
+                                        insert: `::${newComment}=`
                                     }
                                 });
                             }

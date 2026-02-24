@@ -7,7 +7,7 @@ import { Annotation } from './types';
  * 
  * Using non-greedy `[\s\S]*?` allows matching content that includes '=' or newlines (like LaTeX).
  */
-const COMMENT_REGEX = /==([\s\S]*?)::([\s\S]*?)==/g;
+const COMMENT_REGEX = /=([\s\S]*?)::([\s\S]*?)=/g;
 const MASK_REGEX = /~=([\s\S]*?)=~/g;
 
 /**
@@ -23,12 +23,11 @@ export function parseAnnotationsFromLine(lineText: string, offset: number): Anno
     while ((match = COMMENT_REGEX.exec(lineText)) !== null) {
         const fullMatchStart = offset + match.index;
         const fullMatchEnd = fullMatchStart + match[0].length;
-        const comment = match[1]!;
-        const text = match[2]!;
+        const text = match[1]!;
+        const comment = match[2]!;
 
-        // The visible text starts after "==comment::" and ends before "=="
-        const prefixLen = 2 + comment.length + 2; // "==" + comment + "::"
-        const textFrom = fullMatchStart + prefixLen;
+        // The visible text starts after "=" and ends before "::"
+        const textFrom = fullMatchStart + 1; // "="
         const textTo = textFrom + text.length;
 
         results.push({
@@ -84,5 +83,5 @@ export function parseAnnotations(docText: string): Annotation[] {
 /**
  * Regex patterns exported for use in post-processor (HTML text node parsing).
  */
-export const COMMENT_PATTERN = /==([\s\S]*?)::([\s\S]*?)==/g;
+export const COMMENT_PATTERN = /=([\s\S]*?)::([\s\S]*?)=/g;
 export const MASK_PATTERN = /~=([\s\S]*?)=~/g;

@@ -52,8 +52,8 @@ export function annotationPostProcessor(
                 index: m.index,
                 length: m[0].length,
                 type: 'comment',
-                comment: m[1],
-                text: m[2]!,
+                comment: m[2],
+                text: m[1]!,
             });
         }
 
