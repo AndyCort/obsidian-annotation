@@ -7,9 +7,9 @@ import {
     WidgetType,
 } from '@codemirror/view';
 import { RangeSetBuilder } from '@codemirror/state';
-import { editorLivePreviewField } from 'obsidian';
+import { editorLivePreviewField, renderMath, finishRenderMath } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
-import { Annotation, MaskAnnotation, AnnotationPluginSettings } from './types';
+import { Annotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
 
 /**
@@ -21,6 +21,87 @@ class HiddenMarkerWidget extends WidgetType {
         const span = document.createElement('span');
         span.style.display = 'none';
         return span;
+    }
+}
+
+/**
+ * A widget that renders the mask content (including LaTeX) inside a
+ * blurred container. This completely replaces the raw `~=content=~` text.
+ *
+ * This approach avoids the CM6 mark-decoration-doesn't-wrap-widgets problem
+ * by handling ALL rendering ourselves via a replace decoration.
+ */
+class MaskWidget extends WidgetType {
+    constructor(private content: string) {
+        super();
+    }
+
+    toDOM(): HTMLElement {
+        const wrapper = document.createElement('span');
+        wrapper.className = 'annotation-mask';
+
+        this.renderContent(wrapper);
+
+        return wrapper;
+    }
+
+    /**
+     * Render text content, replacing inline ($...$) and display ($$...$$)
+     * math expressions with rendered MathJax elements via Obsidian's API.
+     */
+    private renderContent(container: HTMLElement): void {
+        const text = this.content;
+
+        // Regex to find $$...$$ (display) or $...$ (inline) math
+        const mathRegex = /\$\$([\s\S]*?)\$\$|\$((?:[^$\\]|\\.)+?)\$/g;
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+
+        while ((match = mathRegex.exec(text)) !== null) {
+            // Add plain text before the math expression
+            if (match.index > lastIndex) {
+                container.appendChild(
+                    document.createTextNode(text.slice(lastIndex, match.index))
+                );
+            }
+
+            const displayMath = match[1];  // from $$...$$
+            const inlineMath = match[2];   // from $...$
+            const mathSource = displayMath !== undefined ? displayMath : (inlineMath || '');
+            const isDisplay = displayMath !== undefined;
+
+            try {
+                const mathEl = renderMath(mathSource, isDisplay);
+                container.appendChild(mathEl);
+            } catch {
+                // Fallback: show raw LaTeX text
+                container.appendChild(document.createTextNode(match[0]));
+            }
+
+            lastIndex = match.index + match[0].length;
+        }
+
+        // Add remaining plain text after the last math expression
+        if (lastIndex < text.length) {
+            container.appendChild(
+                document.createTextNode(text.slice(lastIndex))
+            );
+        }
+
+        // Finalize MathJax rendering
+        try {
+            finishRenderMath();
+        } catch {
+            // ignore
+        }
+    }
+
+    eq(other: MaskWidget): boolean {
+        return this.content === other.content;
+    }
+
+    ignoreEvent(): boolean {
+        return false;
     }
 }
 
@@ -49,7 +130,7 @@ function collectAnnotations(view: EditorView): Annotation[] {
 /**
  * Build decorations for all visible annotations in the editor.
  */
-function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, annotations: Annotation[]): DecorationSet {
+function buildDecorations(view: EditorView, annotations: Annotation[]): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
 
     let isLivePreview: boolean;
@@ -97,13 +178,14 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
                 );
 
                 if (!cursorInside) {
-                    builder.add(ann.syntaxFrom, ann.from,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
-                    builder.add(ann.from, ann.to,
-                        Decoration.mark({ class: 'annotation-mask' }));
-                    builder.add(ann.to, ann.syntaxTo,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
+                    // Use a SINGLE replace decoration for the entire mask syntax
+                    // (including ~= and =~). The MaskWidget renders the content
+                    // with math support and wraps it in a blur container.
+                    const maskContent = view.state.sliceDoc(ann.from, ann.to);
+                    builder.add(ann.syntaxFrom, ann.syntaxTo,
+                        Decoration.replace({ widget: new MaskWidget(maskContent) }));
                 } else {
+                    // Cursor inside: show raw text, just mark the content portion
                     builder.add(ann.from, ann.to,
                         Decoration.mark({ class: 'annotation-mask' }));
                 }
@@ -117,97 +199,6 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
     return builder.finish();
 }
 
-/** CSS selectors for widget-like elements in Obsidian's CM6 editor */
-const WIDGET_SELECTORS = [
-    '[contenteditable="false"]',
-    '.cm-widget',
-    '.cm-embed-block',
-    'mjx-container',
-    '.math',
-    '.MathJax',
-    '.internal-embed',
-    '.cm-inline-code',
-].join(', ');
-
-/**
- * Apply blur effect directly to DOM elements within mask ranges.
- *
- * CM6 mark decorations do NOT wrap around widget decorations (e.g. rendered
- * LaTeX). We query all widget-like elements in the editor's content DOM
- * and check if their document position falls within a mask range.
- */
-function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void {
-    const masks = annotations.filter(a => a.type === 'mask') as MaskAnnotation[];
-
-    // Clean up previously applied DOM-level mask classes
-    const existing = Array.from(view.dom.querySelectorAll('.annotation-mask-widget'));
-    for (const el of existing) {
-        el.classList.remove('annotation-mask-widget');
-    }
-
-    if (masks.length === 0) return;
-
-    let isLivePreview: boolean;
-    try {
-        isLivePreview = view.state.field(editorLivePreviewField);
-    } catch {
-        return;
-    }
-    if (!isLivePreview) return;
-
-    // Build a list of active (non-cursor-inside) mask ranges
-    const activeMasks = masks.filter(mask => {
-        return !view.state.selection.ranges.some(
-            range => range.from >= mask.syntaxFrom && range.to <= mask.syntaxTo
-        );
-    });
-    if (activeMasks.length === 0) return;
-
-    const widgetElements = Array.from(view.contentDOM.querySelectorAll(WIDGET_SELECTORS));
-
-    for (const widgetEl of widgetElements) {
-        const htmlEl = widgetEl as HTMLElement;
-
-        // Skip our own annotation elements and already-processed ones
-        if (htmlEl.classList.contains('annotation-mask') ||
-            htmlEl.classList.contains('annotation-comment') ||
-            htmlEl.classList.contains('annotation-mask-widget')) {
-            continue;
-        }
-
-        try {
-            const pos = view.posAtDOM(widgetEl as Node);
-
-            // Use a broad range check: include the full syntax range (syntaxFrom..syntaxTo)
-            // because posAtDOM might return positions at the boundary markers
-            for (const mask of activeMasks) {
-                if (pos >= mask.syntaxFrom && pos <= mask.syntaxTo) {
-                    htmlEl.classList.add('annotation-mask-widget');
-                    break;
-                }
-            }
-        } catch {
-            // posAtDOM can throw — skip
-        }
-    }
-}
-
-/**
- * Schedule mask effects with multiple retries to handle async widget rendering.
- * Obsidian's math renderer may fire after our initial requestAnimationFrame,
- * so we retry a few times to catch late-rendered widgets.
- */
-function scheduleMaskEffects(view: EditorView, annotations: Annotation[]): void {
-    // Immediate attempt
-    requestAnimationFrame(() => {
-        applyDomMaskEffects(view, annotations);
-        // Second attempt after a short delay (catches late math rendering)
-        setTimeout(() => applyDomMaskEffects(view, annotations), 100);
-        // Third attempt for very slow renders
-        setTimeout(() => applyDomMaskEffects(view, annotations), 500);
-    });
-}
-
 /**
  * Create the CodeMirror 6 editor extension for annotation decorations.
  */
@@ -216,23 +207,10 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
         class {
             decorations: DecorationSet;
             private annotations: Annotation[] = [];
-            private observer: MutationObserver | null = null;
-            private view: EditorView;
 
             constructor(view: EditorView) {
-                this.view = view;
                 this.annotations = collectAnnotations(view);
-                this.decorations = buildDecorations(view, settings, this.annotations);
-                scheduleMaskEffects(view, this.annotations);
-
-                // MutationObserver to catch async widget insertions (e.g. LaTeX rendering)
-                this.observer = new MutationObserver(() => {
-                    applyDomMaskEffects(this.view, this.annotations);
-                });
-                this.observer.observe(view.contentDOM, {
-                    childList: true,
-                    subtree: true,
-                });
+                this.decorations = buildDecorations(view, this.annotations);
             }
 
             update(update: ViewUpdate) {
@@ -242,15 +220,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                     update.selectionSet
                 ) {
                     this.annotations = collectAnnotations(update.view);
-                    this.decorations = buildDecorations(update.view, settings, this.annotations);
-                    scheduleMaskEffects(update.view, this.annotations);
-                }
-            }
-
-            destroy() {
-                if (this.observer) {
-                    this.observer.disconnect();
-                    this.observer = null;
+                    this.decorations = buildDecorations(update.view, this.annotations);
                 }
             }
         },
