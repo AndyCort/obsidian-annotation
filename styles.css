@@ -33,10 +33,7 @@
 		0 0 0 1px rgba(255, 255, 255, 0.05);
 	backdrop-filter: blur(12px);
 	-webkit-backdrop-filter: blur(12px);
-	/* Allow pointer events so we can click to edit */
 	pointer-events: auto;
-
-	/* Fade-in animation */
 	animation: annotation-tooltip-fadein 0.18s ease-out;
 }
 
@@ -95,90 +92,27 @@
 }
 
 /* ── Mask ──
-   Uses color:transparent + text-shadow for text blur, and
-   a ::after overlay with backdrop-filter for widget blur (e.g. rendered LaTeX).
-   This ensures blur works regardless of whether CM6 wraps widgets in our span. */
+   Used by both:
+   1. MaskWidget (cursor outside) — wraps everything including rendered math
+   2. Decoration.mark (cursor inside) — wraps raw text only
+   filter: blur() on the parent applies to ALL children inside the span. */
 
 .annotation-mask {
 	position: relative;
 	display: inline;
-	/* Blur text by making it transparent and using a blurred text-shadow */
-	color: transparent !important;
-	text-shadow: 0 0 var(--annotation-mask-blur, 5px) rgba(var(--annotation-mask-text-rgb, 0, 0, 0), 0.5);
+	filter: blur(var(--annotation-mask-blur, 5px));
+	transition: filter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 	cursor: pointer;
 	user-select: none;
 	border-radius: 3px;
 	padding: 1px 2px;
-	background-color: rgba(128, 128, 128, 0.15);
-	transition: color 0.35s ease, text-shadow 0.35s ease, background-color 0.35s ease;
+	background-color: rgba(128, 128, 128, 0.1);
 }
 
 .annotation-mask:hover {
-	color: inherit !important;
-	text-shadow: none;
+	filter: blur(0px);
 	user-select: text;
 	background-color: rgba(100, 200, 255, 0.08);
-}
-
-/* For cm-line elements that contain our mask, we also blur sibling
-   widget elements (rendered math) that are adjacent to .annotation-mask spans.
-   CM6 mark decorations may not wrap widgets, so we target them via CSS. */
-
-/* Obsidian renders inline math as spans with specific classes.
-   When they are adjacent to our .annotation-mask span (i.e. within a mask range),
-   they should also be blurred. We do this by targeting common widget selectors
-   that are siblings of .annotation-mask. */
-.annotation-mask+.cm-widget,
-.annotation-mask+[contenteditable="false"],
-.annotation-mask+mjx-container,
-.annotation-mask+.math,
-.annotation-mask+.MathJax,
-.annotation-mask+span[contenteditable="false"] {
-	filter: blur(var(--annotation-mask-blur, 5px)) !important;
-	transition: filter 0.35s ease;
-	cursor: pointer;
-	user-select: none;
-}
-
-.annotation-mask:hover+.cm-widget,
-.annotation-mask:hover+[contenteditable="false"],
-.annotation-mask:hover+mjx-container,
-.annotation-mask:hover+.math,
-.annotation-mask:hover+.MathJax,
-.annotation-mask:hover+span[contenteditable="false"] {
-	filter: blur(0px) !important;
-	user-select: text;
-}
-
-/* Also catch widgets followed by .annotation-mask (math before closing text) */
-.cm-widget:has(+ .annotation-mask),
-[contenteditable="false"]:has(+ .annotation-mask),
-mjx-container:has(+ .annotation-mask),
-.math:has(+ .annotation-mask),
-.MathJax:has(+ .annotation-mask),
-span[contenteditable="false"]:has(+ .annotation-mask) {
-	filter: blur(var(--annotation-mask-blur, 5px)) !important;
-	transition: filter 0.35s ease;
-	cursor: pointer;
-	user-select: none;
-}
-
-/* Hover reveal for widget-before-mask pattern */
-.cm-widget:has(+ .annotation-mask:hover),
-[contenteditable="false"]:has(+ .annotation-mask:hover),
-mjx-container:has(+ .annotation-mask:hover),
-.math:has(+ .annotation-mask:hover),
-.MathJax:has(+ .annotation-mask:hover),
-span[contenteditable="false"]:has(+ .annotation-mask:hover) {
-	filter: blur(0px) !important;
-	user-select: text;
-}
-
-/* When the mask has only a widget child (no text), the adjacent sibling
-   approach won't work. Target widgets that are between two mask spans. */
-.annotation-mask~.cm-widget~.annotation-mask,
-.annotation-mask~[contenteditable="false"]~.annotation-mask {
-	/* These are the closing mask segments after a widget */
 }
 
 /* ── Settings Page ── */

@@ -7,7 +7,7 @@ import {
     WidgetType,
 } from '@codemirror/view';
 import { RangeSetBuilder } from '@codemirror/state';
-import { editorLivePreviewField } from 'obsidian';
+import { editorLivePreviewField, renderMath, finishRenderMath } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
 import { Annotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
@@ -21,6 +21,95 @@ class HiddenMarkerWidget extends WidgetType {
         const span = document.createElement('span');
         span.style.display = 'none';
         return span;
+    }
+}
+
+/**
+ * A widget that replaces the entire mask syntax (~=content=~) with a
+ * blurred container that renders the content including LaTeX math.
+ *
+ * Uses Obsidian's renderMath/finishRenderMath API.
+ * Key fix: finishRenderMath() is deferred via requestAnimationFrame
+ * so it runs AFTER CM6 has mounted the widget in the document DOM.
+ */
+class MaskWidget extends WidgetType {
+    constructor(private content: string) {
+        super();
+    }
+
+    toDOM(): HTMLElement {
+        const wrapper = document.createElement('span');
+        wrapper.className = 'annotation-mask';
+
+        let hasMath = false;
+        const text = this.content;
+
+        // Regex: find $$...$$ (display math) or $...$ (inline math)
+        const mathRegex = /\$\$([\s\S]*?)\$\$|\$((?:[^$\\]|\\.)+?)\$/g;
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+
+        while ((match = mathRegex.exec(text)) !== null) {
+            // Add plain text before this math expression
+            if (match.index > lastIndex) {
+                wrapper.appendChild(
+                    document.createTextNode(text.slice(lastIndex, match.index))
+                );
+            }
+
+            const displayMathContent = match[1];  // from $$...$$
+            const inlineMathContent = match[2];    // from $...$
+            const mathSource = displayMathContent !== undefined
+                ? displayMathContent
+                : (inlineMathContent || '');
+            const isDisplay = displayMathContent !== undefined;
+
+            try {
+                const mathEl = renderMath(mathSource, isDisplay);
+                wrapper.appendChild(mathEl);
+                hasMath = true;
+            } catch {
+                // Fallback: show raw text
+                wrapper.appendChild(document.createTextNode(match[0]));
+            }
+
+            lastIndex = match.index + match[0].length;
+        }
+
+        // Add remaining plain text after the last math expression
+        if (lastIndex < text.length) {
+            wrapper.appendChild(
+                document.createTextNode(text.slice(lastIndex))
+            );
+        }
+
+        // If no math was found and no text was added, show the raw content
+        if (lastIndex === 0 && !hasMath) {
+            wrapper.textContent = text;
+        }
+
+        // CRITICAL: finishRenderMath() must be called AFTER the widget is
+        // mounted in the document DOM. toDOM() is called before mounting,
+        // so we defer the call.
+        if (hasMath) {
+            requestAnimationFrame(() => {
+                try {
+                    finishRenderMath();
+                } catch {
+                    // ignore
+                }
+            });
+        }
+
+        return wrapper;
+    }
+
+    eq(other: MaskWidget): boolean {
+        return this.content === other.content;
+    }
+
+    ignoreEvent(): boolean {
+        return false;
     }
 }
 
@@ -97,18 +186,13 @@ function buildDecorations(view: EditorView, annotations: Annotation[]): Decorati
                 );
 
                 if (!cursorInside) {
-                    // Hide the ~= and =~ markers
-                    builder.add(ann.syntaxFrom, ann.from,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
-                    // Mark the content with annotation-mask class
-                    builder.add(ann.from, ann.to,
-                        Decoration.mark({
-                            class: 'annotation-mask',
-                            tagName: 'span',
-                        }));
-                    builder.add(ann.to, ann.syntaxTo,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
+                    // Replace the ENTIRE ~=...=~ range with MaskWidget.
+                    // MaskWidget renders the content (incl. math) in a blur wrapper.
+                    const maskContent = view.state.sliceDoc(ann.from, ann.to);
+                    builder.add(ann.syntaxFrom, ann.syntaxTo,
+                        Decoration.replace({ widget: new MaskWidget(maskContent) }));
                 } else {
+                    // Cursor inside: show raw syntax, just highlight content
                     builder.add(ann.from, ann.to,
                         Decoration.mark({ class: 'annotation-mask' }));
                 }
