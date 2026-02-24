@@ -51,7 +51,13 @@ function collectAnnotations(view: EditorView): Annotation[] {
  */
 function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, annotations: Annotation[]): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
-    const isLivePreview = view.state.field(editorLivePreviewField);
+
+    let isLivePreview: boolean;
+    try {
+        isLivePreview = view.state.field(editorLivePreviewField);
+    } catch {
+        isLivePreview = false;
+    }
 
     for (const ann of annotations) {
         if (ann.type === 'comment') {
@@ -61,45 +67,28 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
                 );
 
                 if (!cursorInside) {
-                    builder.add(
-                        ann.syntaxFrom,
-                        ann.from,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() })
-                    );
-
-                    builder.add(
-                        ann.from,
-                        ann.to,
+                    builder.add(ann.syntaxFrom, ann.from,
+                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
+                    builder.add(ann.from, ann.to,
                         Decoration.mark({
                             class: 'annotation-comment',
                             attributes: { 'data-annotation-comment': ann.comment },
-                        })
-                    );
-
-                    builder.add(
-                        ann.to,
-                        ann.syntaxTo,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() })
-                    );
+                        }));
+                    builder.add(ann.to, ann.syntaxTo,
+                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
                 } else {
-                    builder.add(
-                        ann.from,
-                        ann.to,
+                    builder.add(ann.from, ann.to,
                         Decoration.mark({
                             class: 'annotation-comment',
                             attributes: { 'data-annotation-comment': ann.comment },
-                        })
-                    );
+                        }));
                 }
             } else {
-                builder.add(
-                    ann.from,
-                    ann.to,
+                builder.add(ann.from, ann.to,
                     Decoration.mark({
                         class: 'annotation-comment',
                         attributes: { 'data-annotation-comment': ann.comment },
-                    })
-                );
+                    }));
             }
         } else if (ann.type === 'mask') {
             if (isLivePreview) {
@@ -108,36 +97,19 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
                 );
 
                 if (!cursorInside) {
-                    builder.add(
-                        ann.syntaxFrom,
-                        ann.from,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() })
-                    );
-
-                    builder.add(
-                        ann.from,
-                        ann.to,
-                        Decoration.mark({ class: 'annotation-mask' })
-                    );
-
-                    builder.add(
-                        ann.to,
-                        ann.syntaxTo,
-                        Decoration.replace({ widget: new HiddenMarkerWidget() })
-                    );
+                    builder.add(ann.syntaxFrom, ann.from,
+                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
+                    builder.add(ann.from, ann.to,
+                        Decoration.mark({ class: 'annotation-mask' }));
+                    builder.add(ann.to, ann.syntaxTo,
+                        Decoration.replace({ widget: new HiddenMarkerWidget() }));
                 } else {
-                    builder.add(
-                        ann.from,
-                        ann.to,
-                        Decoration.mark({ class: 'annotation-mask' })
-                    );
+                    builder.add(ann.from, ann.to,
+                        Decoration.mark({ class: 'annotation-mask' }));
                 }
             } else {
-                builder.add(
-                    ann.from,
-                    ann.to,
-                    Decoration.mark({ class: 'annotation-mask' })
-                );
+                builder.add(ann.from, ann.to,
+                    Decoration.mark({ class: 'annotation-mask' }));
             }
         }
     }
@@ -147,108 +119,81 @@ function buildDecorations(view: EditorView, settings: AnnotationPluginSettings, 
 
 /**
  * Apply blur effect directly to DOM elements within mask ranges.
- * This is necessary because CM6 mark decorations do NOT wrap around
- * widget decorations (e.g. rendered LaTeX). We must find those widget
- * DOM elements and apply the blur class to them directly.
+ *
+ * CM6 mark decorations do NOT wrap around widget decorations (e.g. rendered
+ * LaTeX). We query all widget-like elements in the editor's content DOM
+ * and check if their document position falls within a mask range using
+ * view.posAtDOM(). If so, we add the blur class directly.
  */
 function applyDomMaskEffects(view: EditorView, annotations: Annotation[]): void {
     const masks = annotations.filter(a => a.type === 'mask') as MaskAnnotation[];
-    const isLivePreview = view.state.field(editorLivePreviewField);
 
     // Clean up previously applied DOM-level mask classes
     view.dom.querySelectorAll('.annotation-mask-widget').forEach(el => {
         el.classList.remove('annotation-mask-widget');
     });
 
+    if (masks.length === 0) return;
+
+    let isLivePreview: boolean;
+    try {
+        isLivePreview = view.state.field(editorLivePreviewField);
+    } catch {
+        return;
+    }
     if (!isLivePreview) return;
 
-    for (const mask of masks) {
-        const cursorInside = view.state.selection.ranges.some(
+    // Build a list of active (non-cursor-inside) mask ranges
+    const activeMasks = masks.filter(mask => {
+        return !view.state.selection.ranges.some(
             range => range.from >= mask.syntaxFrom && range.to <= mask.syntaxTo
         );
-        if (cursorInside) continue;
+    });
+    if (activeMasks.length === 0) return;
+
+    // Query ALL potential widget elements in the editor content DOM.
+    // In Obsidian's CM6, rendered widgets (math, embeds, etc.) are typically:
+    // - Elements with contenteditable="false"
+    // - Elements with class cm-widget
+    // - <mjx-container> tags
+    // - Elements with .math, .MathJax, etc.
+    const selectors = [
+        '[contenteditable="false"]',
+        '.cm-widget',
+        '.cm-embed-block',
+        'mjx-container',
+        '.math',
+        '.MathJax',
+        '.internal-embed',
+    ].join(', ');
+
+    const widgetElements = Array.from(view.contentDOM.querySelectorAll(selectors));
+
+    for (const widgetEl of widgetElements) {
+        const htmlEl = widgetEl as HTMLElement;
+
+        // Skip our own annotation elements
+        if (htmlEl.classList.contains('annotation-mask') ||
+            htmlEl.classList.contains('annotation-comment') ||
+            htmlEl.classList.contains('annotation-mask-widget')) {
+            continue;
+        }
 
         try {
-            // Walk through the DOM nodes within the mask range
-            // and apply the blur class to any widget elements (e.g. rendered LaTeX)
-            const startInfo = view.domAtPos(mask.from);
-            const endInfo = view.domAtPos(mask.to);
+            const pos = view.posAtDOM(widgetEl as Node);
 
-            const startNode = startInfo.node;
-            const endNode = endInfo.node;
-
-            // Find the common line element (cm-line)
-            const lineEl = view.dom.querySelector('.cm-line')
-                ? getLineElement(startNode)
-                : null;
-
-            if (!lineEl) continue;
-
-            // Walk all child elements of the line and check if they fall within the mask range
-            const children = Array.from(lineEl.childNodes);
-            let inRange = false;
-
-            for (const child of children) {
-                // Check if this node is or contains the start node
-                if (child === startNode || child.contains(startNode)) {
-                    inRange = true;
-                }
-
-                // If we're in range, check for widget elements that need blur
-                if (inRange && child instanceof HTMLElement) {
-                    // Obsidian renders math, embeds, etc. as widget elements
-                    // These typically have classes like cm-embed-block, math, mjx-container, etc.
-                    if (isWidgetElement(child)) {
-                        child.classList.add('annotation-mask-widget');
-                    }
-                }
-
-                // Check if this node is or contains the end node
-                if (child === endNode || child.contains(endNode)) {
-                    inRange = false;
+            // Check if this position falls within any active mask range
+            for (const mask of activeMasks) {
+                if (pos >= mask.from && pos <= mask.to) {
+                    htmlEl.classList.add('annotation-mask-widget');
                     break;
                 }
             }
-        } catch (e) {
-            // Position might not be visible or DOM not ready
+        } catch {
+            // posAtDOM can throw if the element is not in the editor
+            // or has been removed — just skip it
         }
     }
-}
-
-/**
- * Walk up the DOM tree to find the cm-line element.
- */
-function getLineElement(node: Node): HTMLElement | null {
-    let current: Node | null = node;
-    while (current) {
-        if (current instanceof HTMLElement && current.classList.contains('cm-line')) {
-            return current;
-        }
-        current = current.parentNode;
-    }
-    return null;
-}
-
-/**
- * Check if an element is a CM6 widget (e.g. rendered LaTeX, embed, etc.)
- * that is NOT already our own annotation element.
- */
-function isWidgetElement(el: HTMLElement): boolean {
-    // Skip our own annotation spans
-    if (el.classList.contains('annotation-mask') || el.classList.contains('annotation-comment')) {
-        return false;
-    }
-    // Common widget/embed selectors in Obsidian's CM6 editor
-    return (
-        el.classList.contains('cm-embed-block') ||
-        el.classList.contains('cm-widget') ||
-        el.classList.contains('math') ||
-        el.classList.contains('internal-embed') ||
-        el.querySelector('mjx-container') !== null ||
-        el.querySelector('.MathJax') !== null ||
-        el.querySelector('.math') !== null ||
-        el.tagName === 'MJX-CONTAINER'
-    );
 }
 
 /**
@@ -263,7 +208,6 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
             constructor(view: EditorView) {
                 this.annotations = collectAnnotations(view);
                 this.decorations = buildDecorations(view, settings, this.annotations);
-                // Schedule DOM mask effects after initial render
                 requestAnimationFrame(() => applyDomMaskEffects(view, this.annotations));
             }
 
@@ -275,7 +219,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                 ) {
                     this.annotations = collectAnnotations(update.view);
                     this.decorations = buildDecorations(update.view, settings, this.annotations);
-                    // Schedule DOM mask effects after CM6 has finished rendering
+                    // Schedule DOM effects after CM6 has finished rendering
                     requestAnimationFrame(() => applyDomMaskEffects(update.view, this.annotations));
                 }
             }
@@ -295,11 +239,12 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                 const comment = target.getAttribute('data-annotation-comment');
                 if (comment) {
                     const rect = target.getBoundingClientRect();
-
                     const pos = view.posAtDOM(target);
                     const line = view.state.doc.lineAt(pos);
                     const annotations = parseAnnotationsFromLine(line.text, line.from);
-                    const ann = annotations.find(a => a.type === 'comment' && a.from <= pos && a.to >= pos) as any;
+                    const ann = annotations.find(
+                        a => a.type === 'comment' && a.from <= pos && a.to >= pos
+                    ) as any;
 
                     if (ann) {
                         showTooltip({
@@ -309,7 +254,6 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                             onSave: (newComment: string) => {
                                 const prefixEnd = ann.from;
                                 const prefixStart = ann.syntaxFrom;
-
                                 view.dispatch({
                                     changes: {
                                         from: prefixStart,
