@@ -4,9 +4,11 @@ import { Annotation } from './types';
  * Regex patterns for annotation syntax:
  * - Comment: ==comment::text==
  * - Mask: ~=text=~
+ * 
+ * Using non-greedy `[\s\S]*?` allows matching content that includes '=' or newlines (like LaTeX).
  */
-const COMMENT_REGEX = /==((?:[^=]|=[^=])+?)::((?:[^=]|=[^=])+?)==/g;
-const MASK_REGEX = /~=((?:[^=]|=[^~])+?)=~/g;
+const COMMENT_REGEX = /==([\s\S]*?)::([\s\S]*?)==/g;
+const MASK_REGEX = /~=([\s\S]*?)=~/g;
 
 /**
  * Parse a line of text and return all annotations found.
@@ -82,5 +84,5 @@ export function parseAnnotations(docText: string): Annotation[] {
 /**
  * Regex patterns exported for use in post-processor (HTML text node parsing).
  */
-export const COMMENT_PATTERN = /==((?:[^=]|=[^=])+?)::((?:[^=]|=[^=])+?)==/g;
-export const MASK_PATTERN = /~=((?:[^=]|=[^~])+?)=~/g;
+export const COMMENT_PATTERN = /==([\s\S]*?)::([\s\S]*?)==/g;
+export const MASK_PATTERN = /~=([\s\S]*?)=~/g;
