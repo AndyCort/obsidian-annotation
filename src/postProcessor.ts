@@ -11,85 +11,104 @@ export function annotationPostProcessor(
     el: HTMLElement,
     _ctx: MarkdownPostProcessorContext
 ): void {
-    // Walk through all text nodes in the rendered element
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    const textNodes: Text[] = [];
-
-    let node: Text | null;
-    while ((node = walker.nextNode() as Text | null)) {
-        if (node.textContent && (COMMENT_PATTERN.test(node.textContent) || MASK_PATTERN.test(node.textContent))) {
-            // Reset lastIndex after test
-            COMMENT_PATTERN.lastIndex = 0;
-            MASK_PATTERN.lastIndex = 0;
-            textNodes.push(node);
-        }
-        // Reset lastIndex after test
-        COMMENT_PATTERN.lastIndex = 0;
-        MASK_PATTERN.lastIndex = 0;
+    const text = el.textContent || '';
+    if (!COMMENT_PATTERN.test(text) && !MASK_PATTERN.test(text)) {
+        return;
     }
 
-    for (const textNode of textNodes) {
-        const text = textNode.textContent || '';
-        const fragment = document.createDocumentFragment();
-        let lastIndex = 0;
+    // Reset patterns
+    COMMENT_PATTERN.lastIndex = 0;
+    MASK_PATTERN.lastIndex = 0;
 
-        // Combine both patterns and process in order of appearance
-        interface MatchInfo {
-            index: number;
-            length: number;
-            type: 'comment' | 'mask';
-            comment?: string;
-            text: string;
-        }
+    // 1. Collect all text nodes and their starting offsets in the joined text
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const nodes: { node: Text, start: number, end: number }[] = [];
+    let currentOffset = 0;
+    let node: Text | null;
+    while ((node = walker.nextNode() as Text | null)) {
+        const length = node.textContent?.length || 0;
+        nodes.push({ node, start: currentOffset, end: currentOffset + length });
+        currentOffset += length;
+    }
 
-        const matches: MatchInfo[] = [];
+    // 2. Find all matches in the joined text
+    interface MatchInfo {
+        start: number;
+        end: number;
+        type: 'comment' | 'mask';
+        contentStart: number;
+        contentEnd: number;
+        commentText?: string;
+    }
+    const matches: MatchInfo[] = [];
 
-        // Find all comment matches
-        COMMENT_PATTERN.lastIndex = 0;
-        let m: RegExpExecArray | null;
-        while ((m = COMMENT_PATTERN.exec(text)) !== null) {
-            matches.push({
-                index: m.index,
-                length: m[0].length,
-                type: 'comment',
-                comment: m[2],
-                text: m[1]!,
-            });
-        }
+    // Find comments: ==text::comment==
+    let m: RegExpExecArray | null;
+    COMMENT_PATTERN.lastIndex = 0;
+    while ((m = COMMENT_PATTERN.exec(text)) !== null) {
+        if (!m[1] || !m[2]) continue;
+        matches.push({
+            start: m.index,
+            end: m.index + m[0].length,
+            type: 'comment',
+            contentStart: m.index + 1, // Skip "="
+            contentEnd: m.index + 1 + m[1].length,
+            commentText: m[2],
+        });
+    }
 
-        // Find all mask matches
-        MASK_PATTERN.lastIndex = 0;
-        while ((m = MASK_PATTERN.exec(text)) !== null) {
-            matches.push({
-                index: m.index,
-                length: m[0].length,
-                type: 'mask',
-                text: m[1]!,
-            });
-        }
+    // Find masks: ~=text=~
+    MASK_PATTERN.lastIndex = 0;
+    while ((m = MASK_PATTERN.exec(text)) !== null) {
+        if (!m[1]) continue;
+        matches.push({
+            start: m.index,
+            end: m.index + m[0].length,
+            type: 'mask',
+            contentStart: m.index + 2, // Skip "~="
+            contentEnd: m.index + 2 + m[1].length,
+        });
+    }
 
-        // Sort by position
-        matches.sort((a, b) => a.index - b.index);
+    // Sort matches in REVERSE order to avoid offset changes when modifying DOM
+    // However, since we are wrapping with Ranges, we should be careful.
+    // Actually, wrapping with a span might still affect offsets if not careful.
+    // A better way is to process from LAST to FIRST.
+    matches.sort((a, b) => b.start - a.start);
 
-        for (const match of matches) {
-            // Add text before this match
-            if (match.index > lastIndex) {
-                fragment.appendChild(
-                    document.createTextNode(text.slice(lastIndex, match.index))
-                );
+    // 3. Helper to find (Node, Offset) for a given absolute offset in textContent
+    const getPos = (offset: number): { node: Text, offset: number } | null => {
+        for (const meta of nodes) {
+            if (offset >= meta.start && offset <= meta.end) {
+                return { node: meta.node, offset: offset - meta.start };
             }
+        }
+        return null;
+    };
 
+    // 4. Wrap each match
+    for (const match of matches) {
+        const startPos = getPos(match.start);
+        const endPos = getPos(match.end);
+        const contentStartPos = getPos(match.contentStart);
+        const contentEndPos = getPos(match.contentEnd);
+
+        if (!startPos || !endPos || !contentStartPos || !contentEndPos) continue;
+
+        try {
+            const range = document.createRange();
+            range.setStart(contentStartPos.node, contentStartPos.offset);
+            range.setEnd(contentEndPos.node, contentEndPos.offset);
+
+            const span = document.createElement('span');
             if (match.type === 'comment') {
-                const span = document.createElement('span');
                 span.className = 'annotation-comment';
-                span.textContent = match.text;
-                span.setAttribute('data-annotation-comment', match.comment || '');
-
+                span.setAttribute('data-annotation-comment', match.commentText || '');
                 // Hover events for tooltip
                 span.addEventListener('mouseenter', () => {
                     const rect = span.getBoundingClientRect();
                     showTooltip({
-                        comment: match.comment || '',
+                        comment: match.commentText || '',
                         rect,
                         container: document.body
                     });
@@ -100,26 +119,29 @@ export function annotationPostProcessor(
                         hideTooltip();
                     }
                 });
-
-                fragment.appendChild(span);
             } else {
-                const span = document.createElement('span');
                 span.className = 'annotation-mask';
-                span.textContent = match.text;
-                fragment.appendChild(span);
             }
 
-            lastIndex = match.index + match.length;
-        }
+            // Surround the content with the span
+            range.surroundContents(span);
 
-        // Add remaining text
-        if (lastIndex < text.length) {
-            fragment.appendChild(
-                document.createTextNode(text.slice(lastIndex))
-            );
-        }
+            // Now handle the markers (the text outside content range but inside match range)
+            // We should hide or remove them.
+            // Start marker
+            const startMarkerRange = document.createRange();
+            startMarkerRange.setStart(startPos.node, startPos.offset);
+            startMarkerRange.setEnd(contentStartPos.node, contentStartPos.offset);
+            startMarkerRange.deleteContents();
 
-        // Replace the original text node
-        textNode.parentNode?.replaceChild(fragment, textNode);
+            // End marker
+            const endMarkerRange = document.createRange();
+            endMarkerRange.setStart(contentEndPos.node, contentEndPos.offset);
+            endMarkerRange.setEnd(endPos.node, endPos.offset);
+            endMarkerRange.deleteContents();
+
+        } catch (e) {
+            console.error('Failed to wrap annotation:', e, match);
+        }
     }
 }

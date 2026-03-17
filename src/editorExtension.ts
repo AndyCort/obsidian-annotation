@@ -7,7 +7,7 @@ import {
     WidgetType,
 } from '@codemirror/view';
 import { RangeSetBuilder, Prec } from '@codemirror/state';
-import { editorLivePreviewField, renderMath, finishRenderMath } from 'obsidian';
+import { editorLivePreviewField, renderMath, finishRenderMath, MarkdownRenderer, Component, App } from 'obsidian';
 import { parseAnnotationsFromLine } from './parser';
 import { Annotation, AnnotationPluginSettings } from './types';
 import { showTooltip, hideTooltip } from './tooltipWidget';
@@ -33,7 +33,7 @@ class HiddenMarkerWidget extends WidgetType {
  * replace decorations for $...$ ranges.
  */
 class MaskWidget extends WidgetType {
-    constructor(private content: string) {
+    constructor(private app: App, private content: string) {
         super();
     }
 
@@ -57,46 +57,17 @@ class MaskWidget extends WidgetType {
     }
 
     /**
-     * Render text content, replacing $...$ and $$...$$ with rendered math.
+     * Render content using Obsidian's MarkdownRenderer to support full Markdown + Math.
      */
-    private renderContent(container: HTMLElement): void {
+    private async renderContent(container: HTMLElement): Promise<void> {
         const text = this.content;
 
-        // Match $$...$$ (display math) first, then $...$ (inline math)
-        const mathRegex = /\$\$([\s\S]*?)\$\$|\$((?:[^$\\]|\\.)+?)\$/g;
-        let lastIndex = 0;
-        let match: RegExpExecArray | null;
+        // Use Obsidian's built-in MarkdownRenderer for full support
+        // We use an empty Component as the lifecycle owner
+        const component = new Component();
+        component.load();
 
-        while ((match = mathRegex.exec(text)) !== null) {
-            // Add plain text before the math expression
-            if (match.index > lastIndex) {
-                container.appendChild(
-                    document.createTextNode(text.slice(lastIndex, match.index))
-                );
-            }
-
-            const displayMath = match[1]; // from $$...$$
-            const inlineMath = match[2];  // from $...$
-            const mathSource = displayMath !== undefined ? displayMath : (inlineMath || '');
-            const isDisplay = displayMath !== undefined;
-
-            try {
-                const mathEl = renderMath(mathSource, isDisplay);
-                container.appendChild(mathEl);
-            } catch {
-                // Fallback: show raw LaTeX text
-                container.appendChild(document.createTextNode(match[0]));
-            }
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        // Add remaining plain text
-        if (lastIndex < text.length) {
-            container.appendChild(
-                document.createTextNode(text.slice(lastIndex))
-            );
-        }
+        await MarkdownRenderer.render(this.app as any, text, container, '', component);
     }
 
     eq(other: MaskWidget): boolean {
@@ -133,7 +104,7 @@ function collectAnnotations(view: EditorView): Annotation[] {
 /**
  * Build decorations for all visible annotations in the editor.
  */
-function buildDecorations(view: EditorView, annotations: Annotation[]): DecorationSet {
+function buildDecorations(app: App, view: EditorView, annotations: Annotation[]): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
 
     let isLivePreview: boolean;
@@ -185,7 +156,7 @@ function buildDecorations(view: EditorView, annotations: Annotation[]): Decorati
                     // the content (including math) inside a blur container.
                     const maskContent = view.state.sliceDoc(ann.from, ann.to);
                     builder.add(ann.syntaxFrom, ann.syntaxTo,
-                        Decoration.replace({ widget: new MaskWidget(maskContent) }));
+                        Decoration.replace({ widget: new MaskWidget(app, maskContent) }));
                 } else {
                     // Cursor inside: show raw text with blur mark
                     builder.add(ann.from, ann.to,
@@ -204,13 +175,13 @@ function buildDecorations(view: EditorView, annotations: Annotation[]): Decorati
 /**
  * Create the CodeMirror 6 editor extension for annotation decorations.
  */
-export function createAnnotationEditorExtension(settings: AnnotationPluginSettings) {
+export function createAnnotationEditorExtension(app: App, settings: AnnotationPluginSettings) {
     const annotationViewPlugin = ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
 
             constructor(view: EditorView) {
-                this.decorations = buildDecorations(view, collectAnnotations(view));
+                this.decorations = buildDecorations(app, view, collectAnnotations(view));
             }
 
             update(update: ViewUpdate) {
@@ -220,6 +191,7 @@ export function createAnnotationEditorExtension(settings: AnnotationPluginSettin
                     update.selectionSet
                 ) {
                     this.decorations = buildDecorations(
+                        app,
                         update.view,
                         collectAnnotations(update.view)
                     );

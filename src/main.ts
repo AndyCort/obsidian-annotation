@@ -13,7 +13,7 @@ export default class AnnotationPlugin extends Plugin {
 
         // Register CodeMirror 6 editor extension for live preview / source mode
         this.registerEditorExtension(
-            createAnnotationEditorExtension(this.settings)
+            createAnnotationEditorExtension(this.app, this.settings)
         );
 
         // Register markdown post-processor for reading view
