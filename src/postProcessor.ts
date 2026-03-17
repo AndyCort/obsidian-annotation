@@ -36,44 +36,43 @@ export function annotationPostProcessor(
         start: number;
         end: number;
         type: 'comment' | 'mask';
-        contentStart: number;
-        contentEnd: number;
         commentText?: string;
+        startMarkerLen: number;
+        endMarkerLen: number;
     }
     const matches: MatchInfo[] = [];
 
-    // Find comments: ==text::comment==
+    // Find comments: (=+)text::comment\1
     let m: RegExpExecArray | null;
     COMMENT_PATTERN.lastIndex = 0;
     while ((m = COMMENT_PATTERN.exec(text)) !== null) {
-        if (!m[1] || !m[2]) continue;
+        if (!m[1] || !m[2] || !m[3]) continue;
+        const markerLen = m[1].length;
         matches.push({
             start: m.index,
             end: m.index + m[0].length,
             type: 'comment',
-            contentStart: m.index + 1, // Skip "="
-            contentEnd: m.index + 1 + m[1].length,
-            commentText: m[2],
+            commentText: m[3],
+            startMarkerLen: markerLen,
+            endMarkerLen: m[0].length - markerLen - m[2].length, // length from :: to the end
         });
     }
 
-    // Find masks: ~=text=~
+    // Find masks: ~(=+)text\1~
     MASK_PATTERN.lastIndex = 0;
     while ((m = MASK_PATTERN.exec(text)) !== null) {
-        if (!m[1]) continue;
+        if (!m[1] || !m[2]) continue;
+        const markerLen = m[1].length + 1; // ~ + equals
         matches.push({
             start: m.index,
             end: m.index + m[0].length,
             type: 'mask',
-            contentStart: m.index + 2, // Skip "~="
-            contentEnd: m.index + 2 + m[1].length,
+            startMarkerLen: markerLen,
+            endMarkerLen: markerLen,
         });
     }
 
-    // Sort matches in REVERSE order to avoid offset changes when modifying DOM
-    // However, since we are wrapping with Ranges, we should be careful.
-    // Actually, wrapping with a span might still affect offsets if not careful.
-    // A better way is to process from LAST to FIRST.
+    // Sort matches in REVERSE order to avoid DOM inconsistency
     matches.sort((a, b) => b.start - a.start);
 
     // 3. Helper to find (Node, Offset) for a given absolute offset in textContent
@@ -98,59 +97,45 @@ export function annotationPostProcessor(
             range.setStart(startPos.node, startPos.offset);
             range.setEnd(endPos.node, endPos.offset);
 
-            // Extract the entire match (=text::comment= or ~=text=~)
+            // Extract the entire match
             const fragment = range.extractContents();
 
-            // Helper to remove count characters from the start/end of the fragment
-            const removeChars = (frag: DocumentFragment, count: number, fromStart: boolean) => {
+            // Robust recursive char removal
+            const removeChars = (root: Node, count: number, fromStart: boolean) => {
                 let remaining = count;
                 while (remaining > 0) {
-                    const node = fromStart ? frag.firstChild : frag.lastChild;
+                    const node = fromStart ? root.firstChild : root.lastChild;
                     if (!node) break;
 
                     if (node.nodeType === Node.TEXT_NODE) {
-                        const text = node.textContent || '';
-                        const toRemove = Math.min(remaining, text.length);
+                        const t = node.textContent || '';
+                        const toRemove = Math.min(remaining, t.length);
                         if (fromStart) {
-                            node.textContent = text.slice(toRemove);
+                            node.textContent = t.slice(toRemove);
                         } else {
-                            node.textContent = text.slice(0, text.length - toRemove);
+                            node.textContent = t.slice(0, t.length - toRemove);
                         }
                         remaining -= toRemove;
-                        if (node.textContent === '') frag.removeChild(node);
+                        if (node.textContent === '') root.removeChild(node);
                     } else if (node.nodeType === Node.ELEMENT_NODE) {
-                        // If it's an element, we need to recurse or skip.
-                        // For our markers, they are always text at the boundaries.
-                        break;
+                        const nodeTextLen = node.textContent?.length || 0;
+                        if (nodeTextLen <= remaining) {
+                            remaining -= nodeTextLen;
+                            root.removeChild(node);
+                        } else {
+                            removeChars(node, remaining, fromStart);
+                            remaining = 0;
+                        }
                     } else {
-                        frag.removeChild(node);
+                        root.removeChild(node);
+                        remaining--; // approximate
                     }
                 }
             };
 
-            // Calculate marker lengths
-            // Mask: ~= (2) and =~ (2)
-            // Comment: = (1) and ::comment= (rest)
-            let startMarkerLen = 0;
-            let endMarkerLen = 0;
-
-            if (match.type === 'mask') {
-                startMarkerLen = 2;
-                endMarkerLen = 2;
-            } else {
-                startMarkerLen = 1;
-                // The match is =text::comment=, we want only text inside.
-                // So end marker is everything from :: to the end.
-                const fullMatchText = text.slice(match.start, match.end);
-                const separatorIndex = fullMatchText.indexOf('::');
-                if (separatorIndex !== -1) {
-                    endMarkerLen = fullMatchText.length - separatorIndex;
-                }
-            }
-
             // Remove markers from the fragment
-            removeChars(fragment, endMarkerLen, false);
-            removeChars(fragment, startMarkerLen, true);
+            removeChars(fragment, match.endMarkerLen, false);
+            removeChars(fragment, match.startMarkerLen, true);
 
             // Wrap the cleaned fragment in a span
             const span = document.createElement('span');

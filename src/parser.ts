@@ -7,8 +7,8 @@ import { Annotation } from './types';
  * 
  * Using non-greedy `[\s\S]*?` allows matching content that includes '=' or newlines (like LaTeX).
  */
-const COMMENT_REGEX = /=([\s\S]*?)::([\s\S]*?)=/g;
-const MASK_REGEX = /~=([\s\S]*?)=~/g;
+const COMMENT_REGEX = /(=+)([\s\S]*?)::([\s\S]*?)\1/g;
+const MASK_REGEX = /~(=+)([\s\S]*?)\1~/g;
 
 /**
  * Parse a line of text and return all annotations found.
@@ -17,17 +17,18 @@ const MASK_REGEX = /~=([\s\S]*?)=~/g;
 export function parseAnnotationsFromLine(lineText: string, offset: number): Annotation[] {
     const results: Annotation[] = [];
 
-    // Parse comments: ==comment::text==
+    // Parse comments: ==comment::text== or ===comment::text===
     let match: RegExpExecArray | null;
     COMMENT_REGEX.lastIndex = 0;
     while ((match = COMMENT_REGEX.exec(lineText)) !== null) {
         const fullMatchStart = offset + match.index;
         const fullMatchEnd = fullMatchStart + match[0].length;
-        const text = match[1]!;
-        const comment = match[2]!;
+        const markerLen = match[1]!.length;
+        const text = match[2]!;
+        const comment = match[3]!;
 
-        // The visible text starts after "=" and ends before "::"
-        const textFrom = fullMatchStart + 1; // "="
+        // The visible text starts after "=="
+        const textFrom = fullMatchStart + markerLen;
         const textTo = textFrom + text.length;
 
         results.push({
@@ -40,15 +41,16 @@ export function parseAnnotationsFromLine(lineText: string, offset: number): Anno
         });
     }
 
-    // Parse masks: ~=text=~
+    // Parse masks: ~=text=~ or ~===text===~
     MASK_REGEX.lastIndex = 0;
     while ((match = MASK_REGEX.exec(lineText)) !== null) {
         const fullMatchStart = offset + match.index;
         const fullMatchEnd = fullMatchStart + match[0].length;
-        const text = match[1]!;
+        const markerLen = match[1]!.length + 1; // +1 for "~"
+        const text = match[2]!;
 
-        // The visible text starts after "~=" and ends before "=~"
-        const textFrom = fullMatchStart + 2;
+        // The visible text starts after "~="
+        const textFrom = fullMatchStart + markerLen;
         const textTo = textFrom + text.length;
 
         results.push({
@@ -83,5 +85,5 @@ export function parseAnnotations(docText: string): Annotation[] {
 /**
  * Regex patterns exported for use in post-processor (HTML text node parsing).
  */
-export const COMMENT_PATTERN = /=([\s\S]*?)::([\s\S]*?)=/g;
-export const MASK_PATTERN = /~=([\s\S]*?)=~/g;
+export const COMMENT_PATTERN = /(=+)([\s\S]*?)::([\s\S]*?)\1/g;
+export const MASK_PATTERN = /~(=+)([\s\S]*?)\1~/g;
