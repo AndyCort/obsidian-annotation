@@ -1,6 +1,6 @@
 {
     "name": "obsidian-annotation",
-    "version": "1.0.0",
+    "version": "1.0.12",
     "description": "Obsidian plugin for inline comment annotations and text masks.",
     "main": "main.js",
     "type": "module",
