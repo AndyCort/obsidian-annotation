@@ -90,16 +90,69 @@ export function annotationPostProcessor(
     for (const match of matches) {
         const startPos = getPos(match.start);
         const endPos = getPos(match.end);
-        const contentStartPos = getPos(match.contentStart);
-        const contentEndPos = getPos(match.contentEnd);
 
-        if (!startPos || !endPos || !contentStartPos || !contentEndPos) continue;
+        if (!startPos || !endPos) continue;
 
         try {
             const range = document.createRange();
-            range.setStart(contentStartPos.node, contentStartPos.offset);
-            range.setEnd(contentEndPos.node, contentEndPos.offset);
+            range.setStart(startPos.node, startPos.offset);
+            range.setEnd(endPos.node, endPos.offset);
 
+            // Extract the entire match (=text::comment= or ~=text=~)
+            const fragment = range.extractContents();
+
+            // Helper to remove count characters from the start/end of the fragment
+            const removeChars = (frag: DocumentFragment, count: number, fromStart: boolean) => {
+                let remaining = count;
+                while (remaining > 0) {
+                    const node = fromStart ? frag.firstChild : frag.lastChild;
+                    if (!node) break;
+
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        const text = node.textContent || '';
+                        const toRemove = Math.min(remaining, text.length);
+                        if (fromStart) {
+                            node.textContent = text.slice(toRemove);
+                        } else {
+                            node.textContent = text.slice(0, text.length - toRemove);
+                        }
+                        remaining -= toRemove;
+                        if (node.textContent === '') frag.removeChild(node);
+                    } else if (node.nodeType === Node.ELEMENT_NODE) {
+                        // If it's an element, we need to recurse or skip.
+                        // For our markers, they are always text at the boundaries.
+                        break;
+                    } else {
+                        frag.removeChild(node);
+                    }
+                }
+            };
+
+            // Calculate marker lengths
+            // Mask: ~= (2) and =~ (2)
+            // Comment: = (1) and ::comment= (rest)
+            let startMarkerLen = 0;
+            let endMarkerLen = 0;
+
+            if (match.type === 'mask') {
+                startMarkerLen = 2;
+                endMarkerLen = 2;
+            } else {
+                startMarkerLen = 1;
+                // The match is =text::comment=, we want only text inside.
+                // So end marker is everything from :: to the end.
+                const fullMatchText = text.slice(match.start, match.end);
+                const separatorIndex = fullMatchText.indexOf('::');
+                if (separatorIndex !== -1) {
+                    endMarkerLen = fullMatchText.length - separatorIndex;
+                }
+            }
+
+            // Remove markers from the fragment
+            removeChars(fragment, endMarkerLen, false);
+            removeChars(fragment, startMarkerLen, true);
+
+            // Wrap the cleaned fragment in a span
             const span = document.createElement('span');
             if (match.type === 'comment') {
                 span.className = 'annotation-comment';
@@ -123,22 +176,8 @@ export function annotationPostProcessor(
                 span.className = 'annotation-mask';
             }
 
-            // Surround the content with the span
-            range.surroundContents(span);
-
-            // Now handle the markers (the text outside content range but inside match range)
-            // We should hide or remove them.
-            // Start marker
-            const startMarkerRange = document.createRange();
-            startMarkerRange.setStart(startPos.node, startPos.offset);
-            startMarkerRange.setEnd(contentStartPos.node, contentStartPos.offset);
-            startMarkerRange.deleteContents();
-
-            // End marker
-            const endMarkerRange = document.createRange();
-            endMarkerRange.setStart(contentEndPos.node, contentEndPos.offset);
-            endMarkerRange.setEnd(endPos.node, endPos.offset);
-            endMarkerRange.deleteContents();
+            span.appendChild(fragment);
+            range.insertNode(span);
 
         } catch (e) {
             console.error('Failed to wrap annotation:', e, match);
